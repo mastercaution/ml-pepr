@@ -293,6 +293,7 @@ def filter_outlier(data, labels, filter_pars, save_path=None, load_pars=None):
             abs(distance_neighbor_threshold - min_dist),
         )
         cnt = 0
+        to_many_outliers = None
         while len(outlier_indices) != number_outlier and cnt < max_search_rounds:
             # Binary search
             jmp_size /= 2
@@ -310,10 +311,35 @@ def filter_outlier(data, labels, filter_pars, save_path=None, load_pars=None):
                     f"Distance neighbor threshold: {distance_neighbor_threshold}"
                 )
 
+            if len(outlier_indices) > number_outlier:
+                to_many_outliers = (outlier_indices, distance_neighbor_threshold)
+
         logger.info(f"Performed {cnt} search rounds.")
         logger.info(f"Number of outliers: {len(outlier_indices)}.")
         logger.info(f"Outlier (indexes): {outlier_indices}.")
         logger.info(f"Distance neighbor threshold: {distance_neighbor_threshold}")
+
+        # Fix amount of outliers
+        if len(outlier_indices) < number_outlier and to_many_outliers is not None:
+            # Restore search round where there were to many outliers
+            outlier_indices, distance_neighbor_threshold = to_many_outliers
+            logger.info(
+                f"Restored to many outliers, number of outliers: {len(outlier_indices)}."
+            )
+        if len(outlier_indices) > number_outlier:
+            # Remove most distant outliers to mach number_outlier
+            n_neighbors = np.count_nonzero(
+                distances[outlier_indices] < distance_neighbor_threshold, axis=1
+            )
+            logger.debug(f"Number neighbors {n_neighbors}")
+            n_neighbors = np.argsort(n_neighbors)
+            logger.debug(f"Number neighbors sorted {n_neighbors}")
+            above = len(outlier_indices) - number_outlier
+            outlier_indices = np.delete(outlier_indices, n_neighbors[-above:])
+            logger.info(f"Outlier (indexes): {outlier_indices}.")
+            logger.info(
+                f"Outliers clipped, number of outliers: {len(outlier_indices)}."
+            )
 
         return outlier_indices, distance_neighbor_threshold, number_neighbor_threshold
 
