@@ -11,7 +11,7 @@ from pylatex.utils import bold
 
 from tensorflow.keras import models
 
-from pepr import attack, report
+from pepr import attack, report, utilities
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -30,6 +30,7 @@ class Mia(attack.Attack):
     Attack-Steps:
 
     1. Create dataset mapping for shadow models.
+    (1.5. Optionally filter out outliers)
     2. Train shadow models.
     3. Generate attack model dataset.
     4. Train attack models.
@@ -58,6 +59,8 @@ class Mia(attack.Attack):
         * attack_epochs (int): Number of training epochs of the attack models.
         * attack_batch_size (int): Batch size used in the training of the
           attack models.
+        * filter_pars (dict): (optional) Parameters for filtering out the most
+          vulnerable shadow training records
 
     data : numpy.ndarray
         Dataset with all training samples used in the given pentesting setting.
@@ -179,6 +182,7 @@ class Mia(attack.Attack):
             results can be loaded from disk.
 
             * shadow_data_indices (str) : Path to shadow data mapping.
+            * shadow_data_indices_filtered (str) : Path to filtered shadow data mapping.
             * shadow_models (list) : List of paths to shadow models.
             * attack_datasets (str) : Path to attack datasets.
             * attack_models (list) : List of paths to attack models.
@@ -216,6 +220,25 @@ class Mia(attack.Attack):
             logger.info(f"Save mapping of records to shadow models: {path}.")
             np.save(path, shadow_data_indices)
         logger.debug(f"shadow_datasets shape: {shadow_data_indices.shape}")
+
+        # Step 1.5: Optionally filter out outliers
+        if load and "shadow_data_indices_filtered" in load_pars:
+            path = load_pars["shadow_data_indices_filtered"]
+            logger.info(f"Load filtered shadow indices: {path}.")
+            shadow_data_indices = np.load(path)
+        else:
+            if "filter_pars" in self.attack_pars:
+                logger.info("Filter shadow training set.")
+                shadow_data_indices = Mia._filter_shadow_training_set(
+                    shadow_train_data,
+                    shadow_train_labels,
+                    shadow_data_indices,
+                    self.attack_pars["filter_pars"],
+                )
+            if save:
+                path = save_path + "/filtered_model_indices.npy"
+                logger.info(f"Save filtered shadow indices: {path}.")
+                np.save(path, shadow_data_indices)
 
         # Step 2: Train shadow models
         if load and "shadow_models" in load_pars.keys():
@@ -346,6 +369,53 @@ class Mia(attack.Attack):
             + f"\n{'Average Recall:':<30}"
             + _list_to_formatted_string([self.attack_results["overall_recall"]])
         )
+
+    @staticmethod
+    def _filter_shadow_training_set(data, labels, shadow_data_indices, filter_pars):
+        """
+        Filter out most vulnerable records of the shadow training dataset.
+
+        Parameters
+        ----------
+        data : numpy.ndarray
+            Dataset with all training samples used in the given pentesting setting.
+        labels : numpy.ndarray
+            Array of all labels used in the given pentesting setting.
+        shadow_data_indices : numpy.ndarray
+            Array of shape (n, 2, m) containing m training records and m evaluation
+            records for n shadow models.
+        filter_pars : dict
+            Dictionary containing needed filter parameters. See
+            pepr.utilities.filter_outlier for more details.
+
+        Returns
+        -------
+        Filtered `shadow_data_indices` were outliers were removed.
+        """
+        shape = shadow_data_indices.shape
+        shape = list(shape)
+        shape[2] = shape[2] - filter_pars["number_outlier"]
+        shape = tuple(shape)
+        if shape[2] <= 0:
+            raise ValueError(
+                "Cannot filter more outliers than available records! "
+                "Please try a lower number of outliers."
+            )
+
+        filtered_model_indices = np.full(shape, -1, dtype=int)
+        for i in range(len(filtered_model_indices)):
+            logger.debug(f"Filter shadow set ({i + 1}/{len(filtered_model_indices)})")
+            train_indices = shadow_data_indices[i][0]
+            f = utilities.filter_outlier(
+                data[train_indices], labels[train_indices], filter_pars
+            )[0]
+
+            filtered_model_indices[i][0] = train_indices[f]
+
+            test_indices = shadow_data_indices[i][1]
+            filtered_model_indices[i][1] = test_indices[f]
+
+        return filtered_model_indices
 
     @staticmethod
     def _get_target_model_indices(
